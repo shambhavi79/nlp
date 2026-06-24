@@ -1,0 +1,216 @@
+I like the fake MCP server idea for a pentester audience because it demonstrates the exact lesson without reproducing the original vulnerability.
+
+Goal of the demo:
+
+Show how a browser-accessible local control plane that trusts localhost can unintentionally execute actions.
+
+This version does not execute shell commands. It only creates a harmless text file.
+
+Demo architecture
+
+Attacker Webpage
+       ↓
+WebSocket
+       ↓
+Local Agent Controller (localhost)
+       ↓
+Tool Registry
+       ↓
+Safe Tool → create demo.txt
+
+⸻
+
+Step 1 — Create the local agent
+
+Create agent_server.py
+
+import asyncio
+import websockets
+import json
+from pathlib import Path
+TOOLS = {}
+def tool(name):
+    def register(fn):
+        TOOLS[name] = fn
+        return fn
+    return register
+@tool("create_file")
+def create_file(args):
+    filename = args.get("filename", "demo.txt")
+    Path(filename).write_text(
+        "Action executed via local agent\n"
+    )
+    return {
+        "status": "ok",
+        "message": f"Created {filename}"
+    }
+async def handler(websocket):
+    print("Connected")
+    async for message in websocket:
+        print("Received:", message)
+        try:
+            req = json.loads(message)
+            tool_name = req["tool"]
+            args = req.get("args", {})
+            if tool_name not in TOOLS:
+                result = {
+                    "error": "unknown tool"
+                }
+            else:
+                result = TOOLS[tool_name](args)
+            await websocket.send(
+                json.dumps(result)
+            )
+        except Exception as e:
+            await websocket.send(
+                json.dumps({
+                    "error": str(e)
+                })
+            )
+async def main():
+    server = await websockets.serve(
+        handler,
+        "localhost",
+        8080
+    )
+    print("Agent listening on ws://localhost:8080")
+    await server.wait_closed()
+asyncio.run(main())
+
+Install dependency:
+
+pip install websockets
+
+Run:
+
+python agent_server.py
+
+You should see:
+
+Agent listening on ws://localhost:8080
+
+⸻
+
+Step 2 — Create attacker webpage
+
+Create attacker.html
+
+<!DOCTYPE html>
+<html>
+<body>
+<h1>Interesting AI Research Article</h1>
+<button onclick="attack()">
+Open Page
+</button>
+<p id="status"></p>
+<script>
+async function attack(){
+    let ws =
+        new WebSocket(
+            "ws://localhost:8080"
+        )
+    ws.onopen = () => {
+        document
+            .getElementById("status")
+            .innerText =
+            "Connected"
+        ws.send(
+            JSON.stringify({
+                tool:
+                    "create_file",
+                args:{
+                    filename:
+                    "pwned_demo.txt"
+                }
+            })
+        )
+    }
+    ws.onmessage = (e)=>{
+        document
+            .getElementById("status")
+            .innerText =
+            e.data
+    }
+}
+</script>
+</body>
+</html>
+
+Open this in a browser.
+
+⸻
+
+Step 3 — Run the demo live
+
+Terminal:
+
+python agent_server.py
+
+Browser:
+
+Open attacker.html
+Click button
+
+Show:
+
+Connected
+{"status":"ok"}
+
+Then reveal:
+
+pwned_demo.txt
+
+created locally.
+
+⸻
+
+Step 4 — Explain why this matters
+
+Narration:
+
+“Nothing here was malware. The bug is architectural.”
+
+Point at:
+
+Browser
+↓
+Trusted localhost
+↓
+Tool execution
+
+Explain:
+
+* Browser content became control input
+* Local controller trusted localhost
+* Tool execution happened without approval
+
+⸻
+
+Step 5 — Add mitigation (great ending)
+
+Replace handler:
+
+AUTH_TOKEN = "demo-secret"
+if req.get("token") != AUTH_TOKEN:
+    await websocket.send(
+        json.dumps({
+            "error":"unauthorized"
+        })
+    )
+    continue
+
+Then update page:
+
+token:"wrong-token"
+
+Run again.
+
+Result:
+
+{"error":"unauthorized"}
+
+End with:
+
+“Localhost is a network location, not an identity.”
+
+This usually lands really well with pentesters because they immediately connect it to localhost trust issues, CSRF history, and confused deputy patterns.
